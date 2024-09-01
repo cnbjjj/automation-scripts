@@ -1,0 +1,75 @@
+name: Build and deploy ASP.Net Core app to Azure Web App
+
+env:
+  PROJECT_NAME: '' # Project folder
+  APP_NAME: '' # App name
+  DOTNET_VERSION: '8.x' # .NET Core version
+  CONFIGURATION: 'Release' # Release | Debug
+  SLOT_NAME: 'Production' # Azure slot name
+  RUN_MIGRATIONS: false # Enable migrations
+
+on:
+  push:
+    branches:
+      - main # Trigger branch
+  workflow_dispatch: # Enable manual
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET Core
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install dotnet-ef tool
+        run: dotnet tool install --global dotnet-ef
+
+      - name: Add dotnet tools to PATH
+        run: echo "${{ runner.tool_cache }}/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Restore dependencies
+        run: dotnet restore ./${{ env.PROJECT_NAME }}/${{ env.PROJECT_NAME }}.sln
+
+      - name: Build with dotnet
+        run: dotnet build ./${{ env.PROJECT_NAME }}/${{ env.PROJECT_NAME }}.sln --configuration ${{ env.CONFIGURATION }}
+
+      - name: Apply migrations (if enabled)
+        if: env.RUN_MIGRATIONS == true
+        env:
+          ConnectionStrings__DefaultConnection: ${{ }} # Connection string
+        run: dotnet ef database update --startup-project ./${{ env.PROJECT_NAME }}/${{ env.PROJECT_NAME }}.csproj --project ./${{ env.PROJECT_NAME }}.DAL/${{ env.PROJECT_NAME }}.DAL.csproj
+
+      - name: dotnet publish
+        run: dotnet publish ./${{ env.PROJECT_NAME }}/${{ env.PROJECT_NAME }}.sln -c ${{ env.CONFIGURATION }} -o "${{ runner.temp }}/${{ env.APP_NAME }}"
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-artifact
+          path: ${{ runner.temp }}/${{ env.APP_NAME }}
+
+  deploy:
+    runs-on: windows-latest
+    needs: build
+    environment:
+      name: 'Production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-artifact
+
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APP_NAME }}
+          slot-name: ${{ env.SLOT_NAME }}
+          publish-profile: ${{ }} # Azure publish profile
+          package: .
